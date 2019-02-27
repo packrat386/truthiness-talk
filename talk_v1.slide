@@ -42,7 +42,9 @@ Turns out you cant do `FalseClass.new`, it doesn't exit
   # We can make our own!
   class FalseClass
     def self.new(*args)
-      allocate.initialize(args)
+      obj = allocate
+      obj.send(:initialize, *args)
+      obj
     end
   end
 
