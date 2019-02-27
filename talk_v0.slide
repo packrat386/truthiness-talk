@@ -1,0 +1,163 @@
+Truthiness
+
+Aidan Coyle
+Software Engineer on UK
+acoyle@enova.com
+
+* A Quandary
+
+  # seen in a pull request
+  if !!object
+    do_something
+  end
+
+* What Is Truthiness?
+
+A truthy value is one that when used as the condition in an `if` statement, causes the block to execute.
+
+  if object
+    puts 'truthy'
+  else
+    puts 'falsey'
+  end
+
+The objects in ruby that are _not_ truthy are `nil` and `false`.
+
+* Can We Change It?
+
+A test I would like to pass
+
+  mything = MyClass.new
+
+  if mything
+    exit 1
+  else
+    exit 0
+  end
+
+* Let's Try False
+
+Turns out you cant do `FalseClass.new`, it doesn't exit
+
+  # We can make our own!
+  class FalseClass
+    def self.new(*args)
+      allocate.initialize(args)
+    end
+  end
+
+But we don't have an allocator.
+
+  irb(main):006:0> FalseClass.new
+  Traceback (most recent call last):
+        6: from /home/vagrant/.rubies/ruby-2.6.1/bin/irb:23:in `<main>'
+        5: from /home/vagrant/.rubies/ruby-2.6.1/bin/irb:23:in `load'
+        4: from /home/vagrant/.rubies/ruby-2.6.1/lib/ruby/gems/2.6.0/gems/irb-1.0.0/exe/irb:11:in `<top (required)>'
+        3: from (irb):6
+        2: from (irb):3:in `new'
+        1: from (irb):3:in `allocate'
+  TypeError (allocator undefined for FalseClass)
+
+* Where'd Our Allocator Go?
+
+On line 4286 of `object.c`
+
+  rb_undef_alloc_func(rb_cFalseClass);
+  rb_undef_method(CLASS_OF(rb_cFalseClass), "new");
+
+* But This Is Ruby...
+
+We can actually just put it back `¯\_(ツ)_/¯`
+
+  rb_define_alloc_func(rb_cFalseClass, rb_get_alloc_func(rb_cBasicObject));
+  rb_define_method(CLASS_OF(rb_cFalseClass), "new", rb_class_new_instance, -1);
+
+We just need to somehow call that from a C extension.
+
+* The Plot Thickens
+
+This code still exits 1!
+
+  myfalse = FalseClass.new
+
+  if myfalse
+    exit 1
+  else
+    exit 0
+  end
+
+Our false is not falsey?
+
+* We Have To Go Deeper
+
+We need to find what `if` is actually checking. 
+
+  // deep in include/ruby/ruby.h
+  #define RB_TEST(v) !(((VALUE)(v) & (VALUE)~RUBY_Qnil) == 0)
+
+* An Aside On VALUE
+
+Everything in ruby's C API is a `VALUE`
+
+  // include/ruby/ruby.h
+  typedef unsigned long VALUE;
+
+It's big enough to be a pointer but that doesn't mean it is...
+
+* What Is False?
+
+At the end of the day it's just 0
+
+  // include/ruby/ruby.h
+  RUBY_Qfalse = 0,		/* ...0000 0000 */
+  RUBY_Qtrue  = 2,		/* ...0000 0010 */
+  RUBY_Qnil   = 4,		/* ...0000 0100 */
+  RUBY_Qundef = 6,		/* ...0000 0110 */
+
+So our check looks for the exact values 0 and 4
+
+  #define RB_TEST(v) !(((VALUE)(v) & (VALUE)~RUBY_Qnil) == 0)
+
+* Can We Improve It?
+
+  int do_rb_test(VALUE v)
+  {
+      if (v == RUBY_Qfalse) {
+          return 0;
+      }
+      
+      if (v == RUBY_Qnil) {
+          return 0;
+      }
+  
+      if (rb_obj_is_kind_of(v, rb_cFalseClass) == RUBY_Qtrue) {
+          return 0;
+      }
+  
+      return 1;
+  }
+
+And then change the definition of `RB_TEST`
+
+  #define RB_TEST(v) do_rb_test(v)
+
+* You Can't Handle the Truth
+
+This causes many segfaults
+
+`RB_TEST` is not _only_ used for truth value checking, it's also a guard against dereferencing a non-pointer `VALUE`.
+
+You would need to audit each use of `RB_TEST` in the code and figure out which ones are invalidated by this change... which I'm not going to do
+
+* The Moral
+
+Ruby would do anything via monkeypatch (but it won't do that)
+
+A bad idea can be a good way to learn
+
+* Notes
+
+- [[https://github.com/ruby/ruby]] - Ruby source code
+- [[https://silverhammermba.github.io/emberb/c/]] - super good Ruby C API Reference
+- [[https://gist.github.com/packrat386/deacbc6fa401af143d137d7b92380eb3]] - patch that tried to change `RB_TEST`
+- [[https://github.com/packrat386/bottomless_void]] - gem to make your own `nil`
